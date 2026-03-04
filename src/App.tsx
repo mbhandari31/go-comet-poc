@@ -14,6 +14,10 @@ import {
   Legend,
   ResponsiveContainer,
 } from "recharts";
+import * as pdfjsLib from "pdfjs-dist";
+
+// Set up PDF.js worker - use unpkg CDN which works better with Vite
+pdfjsLib.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjsLib.version}/build/pdf.worker.min.mjs`;
 
 // ─── TYPES ────────────────────────────────────────────────────────────────────
 interface VendorTransaction {
@@ -360,7 +364,7 @@ export default function App() {
 2. extracted_documents(doc_id, vendor_name, invoice_date, total_amount, line_items, confidence, uploaded_at)
    - ${extractedDocs.length} row(s) currently${extractedDocs.length > 0 ? ": " + extractedDocs.map((d) => d.vendor_name).join(", ") : ""}`;
 
-  async function askClaude(question: string, history: Message[]) {
+  async function askAI(question: string, history: Message[]) {
     const sys = `You are a precise data analyst. Answer questions about vendor procurement data.
 ${SCHEMA}
 Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"bar|line|pie|table","followup_hint":"..."}
@@ -371,28 +375,27 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
 - For quarters: CASE WHEN strftime('%m',invoice_date) IN ('01','02','03') THEN 'Q1 2024' WHEN strftime('%m',invoice_date) IN ('04','05','06') THEN 'Q2 2024' WHEN strftime('%m',invoice_date) IN ('07','08','09') THEN 'Q3 2024' ELSE 'Q4 2024' END as quarter
 - If unanswerable: {"sql":"","answer":"I cannot answer this from the available data — [reason]","chart_type":"table","followup_hint":""}`;
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true",
+        "Authorization": `Bearer ${apiKey.trim()}`,
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-5",
+        model: "gpt-4o",
         max_tokens: 1000,
-        system: sys,
         messages: [
+          { role: "system", content: sys },
           ...history.slice(-6).map((m) => ({ role: m.role, content: m.content })),
           { role: "user", content: question },
         ],
       }),
     });
     const d = await res.json();
+    console.log("API Response:", d);
     if (d.error) throw new Error(d.error.message);
     return JSON.parse(
-      d.content[0].text
+      d.choices[0].message.content
         .trim()
         .replace(/```json|```/g, "")
         .trim()
@@ -406,7 +409,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
     setLoading(true);
     setMessages((prev) => [...prev, { role: "user", content: q, id: Date.now() }]);
     try {
-      const result = await askClaude(q, messages);
+      const result = await askAI(q, messages);
       let qr = { rows: [] as Record<string, unknown>[], rowCount: 0, error: null as string | null };
       if (result.sql?.trim()) qr = runSQL(result.sql, VENDOR_TRANSACTIONS, extractedDocs);
       setMessages((prev) => [
@@ -429,58 +432,98 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
     setLoading(false);
   }
 
+  // Convert PDF to images using PDF.js
+  async function pdfToImages(file: File): Promise<string[]> {
+    const arrayBuffer = await file.arrayBuffer();
+    const pdf = await pdfjsLib.getDocument({ data: arrayBuffer }).promise;
+    const images: string[] = [];
+
+    // Convert first 3 pages max (to avoid token limits)
+    const maxPages = Math.min(pdf.numPages, 3);
+
+    for (let i = 1; i <= maxPages; i++) {
+      const page = await pdf.getPage(i);
+      const scale = 2; // Higher scale for better quality
+      const viewport = page.getViewport({ scale });
+
+      const canvas = document.createElement("canvas");
+      const context = canvas.getContext("2d")!;
+      canvas.width = viewport.width;
+      canvas.height = viewport.height;
+
+      await page.render({ canvasContext: context, viewport }).promise;
+
+      // Convert canvas to base64 PNG
+      const imageData = canvas.toDataURL("image/png");
+      images.push(imageData);
+    }
+
+    return images;
+  }
+
   async function handleExtract(file: File) {
     setExtracting(true);
     setExtractedFields(null);
     setDocStored(false);
     try {
-      const base64 = await new Promise<string>((res, rej) => {
-        const r = new FileReader();
-        r.onload = () => res((r.result as string).split(",")[1]);
-        r.onerror = rej;
-        r.readAsDataURL(file);
-      });
       const isImg = file.type.startsWith("image/");
-      const content = isImg
-        ? [
-            { type: "image", source: { type: "base64", media_type: file.type, data: base64 } },
-            {
-              type: "text",
-              text: `Extract structured data. Return ONLY JSON: {"vendor_name":"","invoice_number":"","invoice_date":"YYYY-MM-DD","due_date":null,"total_amount":0,"currency":"INR","line_items":[{"description":"","quantity":1,"unit_price":0,"amount":0}],"tax_amount":0,"subtotal":0,"confidence":0.0,"notes":""}`,
-            },
-          ]
-        : [
-            { type: "document", source: { type: "base64", media_type: "application/pdf", data: base64 } },
-            {
-              type: "text",
-              text: `Extract structured data. Return ONLY JSON: {"vendor_name":"","invoice_number":"","invoice_date":"YYYY-MM-DD","due_date":null,"total_amount":0,"currency":"INR","line_items":[{"description":"","quantity":1,"unit_price":0,"amount":0}],"tax_amount":0,"subtotal":0,"confidence":0.0,"notes":""}`,
-            },
-          ];
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const isPdf = file.type === "application/pdf";
+      const extractPrompt = `Extract structured data from this invoice/document. Return ONLY valid JSON (no markdown): {"vendor_name":"","invoice_number":"","invoice_date":"YYYY-MM-DD","due_date":null,"total_amount":0,"currency":"INR","line_items":[{"description":"","quantity":1,"unit_price":0,"amount":0}],"tax_amount":0,"subtotal":0,"confidence":0.0,"notes":""}`;
+
+      let content: Array<{ type: string; image_url?: { url: string }; text?: string }> = [];
+
+      if (isImg) {
+        // Handle image files directly
+        const base64 = await new Promise<string>((res, rej) => {
+          const r = new FileReader();
+          r.onload = () => res(r.result as string);
+          r.onerror = rej;
+          r.readAsDataURL(file);
+        });
+        content = [
+          { type: "image_url", image_url: { url: base64 } },
+          { type: "text", text: extractPrompt },
+        ];
+      } else if (isPdf) {
+        // Convert PDF pages to images
+        console.log("Converting PDF to images...");
+        const images = await pdfToImages(file);
+        console.log(`Converted ${images.length} pages to images`);
+
+        // Add all page images to content
+        for (const img of images) {
+          content.push({ type: "image_url", image_url: { url: img } });
+        }
+        content.push({ type: "text", text: extractPrompt });
+      } else {
+        throw new Error("Unsupported file type. Please upload a PDF or image.");
+      }
+
+      const res = await fetch("https://api.openai.com/v1/chat/completions", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          "x-api-key": apiKey,
-          "anthropic-version": "2023-06-01",
-          "anthropic-dangerous-direct-browser-access": "true",
+          "Authorization": `Bearer ${apiKey.trim()}`,
         },
         body: JSON.stringify({
-          model: "claude-sonnet-4-5",
+          model: "gpt-4o",
           max_tokens: 1500,
           messages: [{ role: "user", content }],
         }),
       });
       const d = await res.json();
+      console.log("Extract API Response:", d);
       if (d.error) throw new Error(d.error.message);
       setExtractedFields(
         JSON.parse(
-          d.content[0].text
+          d.choices[0].message.content
             .trim()
             .replace(/```json|```/g, "")
             .trim()
         )
       );
     } catch (e) {
+      console.error("Extraction error:", e);
       setExtractedFields({ error: (e as Error).message });
     }
     setExtracting(false);
@@ -614,11 +657,11 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                 letterSpacing: "0.06em",
               }}
             >
-              Anthropic API Key
+              OpenAI API Key
             </label>
             <input
               type="password"
-              placeholder="sk-ant-..."
+              placeholder="sk-..."
               value={apiKey}
               onChange={(e) => setApiKey(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && apiKey.startsWith("sk-") && setApiKeySet(true)}

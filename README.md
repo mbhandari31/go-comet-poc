@@ -20,7 +20,8 @@ A proof-of-concept demonstrating **natural language analytics** over a vendor sp
 
 - **Frontend:** React 18 + TypeScript + Vite
 - **Charts:** Recharts
-- **AI:** Anthropic Claude API (claude-sonnet-4-5-20250514)
+- **PDF Processing:** PDF.js (converts PDFs to images for vision analysis)
+- **AI:** OpenAI GPT-4o (for analytics and vision-based document extraction)
 - **Deployment:** GitHub Pages via GitHub Actions
 - **Architecture:** Client-side only (no backend required)
 
@@ -32,7 +33,7 @@ A proof-of-concept demonstrating **natural language analytics** over a vendor sp
 
 - Node.js 20.19+ or 22.12+
 - npm 9+
-- Anthropic API key ([Get one here](https://console.anthropic.com/))
+- OpenAI API key ([Get one here](https://platform.openai.com/api-keys))
 
 ### Local Development
 
@@ -66,9 +67,9 @@ npm run preview
 ## How to Use
 
 ### Step 1: Enter API Key
-When you first open the app, you'll see an API key screen. Enter your Anthropic API key (starts with `sk-ant-...`) and click **"Launch POC"**.
+When you first open the app, you'll see an API key screen. Enter your OpenAI API key (starts with `sk-...`) and click **"Launch POC"**.
 
-> **Note:** The API key is stored only in browser memory and is never sent anywhere except to Anthropic's API.
+> **Note:** The API key is stored only in browser memory and is never sent anywhere except to OpenAI's API.
 
 ### Step 2: Choose a Tab
 - **Analytics** - Query the vendor spend data lake
@@ -122,6 +123,7 @@ If you don't have an invoice handy, you can:
 1. **Use a sample invoice generator:** [Invoice Generator](https://invoice-generator.com/) - Create and download a sample PDF
 2. **Search for sample invoices:** Google "sample invoice PDF" and download any result
 3. **Create a simple receipt image:** Take a photo of any receipt
+4. **Use the included sample:** Open `samples/sample-invoice.html` in browser and print to PDF
 
 ### Recommended Test Document
 
@@ -131,7 +133,46 @@ For best results, use an invoice that contains:
 - Date
 - Line items with prices
 - Total amount
-- 
+
+---
+
+## Demo Script (1-2 minutes)
+
+### Part 1: Analytics Flow (30 seconds)
+
+1. **Enter API Key** - Paste your OpenAI API key and click "Launch POC"
+2. **You're on the Analytics tab** - Notice the data schema sidebar showing `vendor_transactions` (48 rows)
+3. **Click a suggested question** or type: `"Show total vendor spend by category in 2024"`
+4. **Observe the response:**
+   - Natural language answer
+   - Expandable SQL query (click "View query used")
+   - Data table with results
+   - Auto-generated bar chart
+   - Source citation badges (table name, row count, date range)
+5. **Try a follow-up:** Click the suggested follow-up or ask `"Which category had the highest spend?"`
+
+### Part 2: Document Extraction Flow (30 seconds)
+
+1. **Click "Document Agent" tab**
+2. **Upload an invoice:** Drag & drop or click to browse (PDF or image)
+3. **Watch extraction:** The AI processes the document with a loading indicator
+4. **Review extracted fields:**
+   - Confidence score (green = high, amber = low)
+   - Editable fields: vendor name, invoice number, dates, amounts
+   - Line items breakdown
+5. **Click "Approve & Store Extraction"** - Document is now saved and queryable
+
+### Part 3: Cross-Source Query Flow (30 seconds)
+
+1. **Click "Cross-Source Query" tab**
+2. **Notice the info banner** showing the stored document(s)
+3. **Click a suggested question** like `"Does [Vendor] appear in our spend records?"`
+4. **Observe the cross-source response:**
+   - Answer combining data from both sources
+   - SQL showing JOIN between `vendor_transactions` and `extracted_documents`
+   - Purple "Cross-source JOIN" badge in citations
+5. **Try:** `"Show vendors present in both data lake and uploaded documents"`
+
 ---
 
 ## Data Schema
@@ -170,6 +211,9 @@ go-comet-poc/
 │   ├── App.tsx          # Main application (single-file architecture)
 │   ├── main.tsx         # Entry point
 │   └── index.css        # Global styles
+├── samples/
+│   ├── sample-invoice.html   # Sample invoice for testing
+│   └── SAMPLE_DOCUMENTS.md   # Instructions for sample docs
 ├── .github/
 │   └── workflows/
 │       └── deploy.yml   # GitHub Actions deployment
@@ -186,7 +230,8 @@ go-comet-poc/
 | Decision | Rationale |
 |----------|-----------|
 | **Client-side only** | GitHub Pages deployment, no backend needed |
-| **Anthropic Claude API** | Superior reasoning for SQL generation and document extraction |
+| **OpenAI GPT-4o** | Excellent vision capabilities for document extraction + strong reasoning for SQL generation |
+| **PDF.js** | Converts PDFs to images client-side for vision API compatibility |
 | **In-memory SQL parser** | Lightweight, no database setup required |
 | **Inline styles** | Self-contained components, no CSS conflicts |
 | **Single-file App.tsx** | Simplified architecture for POC |
@@ -199,6 +244,7 @@ go-comet-poc/
 - Extracted documents persist only in browser session
 - Requires user to provide their own API key
 - SQL parser handles common patterns but not full SQL syntax
+- PDF processing limited to first 3 pages (to manage API token limits)
 
 ---
 
