@@ -78,6 +78,39 @@ interface ExtractedFields {
   error?: string;
 }
 
+// ─── CG VERIFICATION TYPES ──────────────────────────────────────────────────
+interface VerificationField {
+  fieldName: string;
+  extractedValue: string;
+  expectedValue: string;
+  status: "match" | "mismatch" | "warning";
+  confidence: number;
+  source: string;
+}
+
+interface IncomingEmail {
+  id: string;
+  from: string;
+  subject: string;
+  receivedAt: string;
+  attachmentName: string;
+  status: "processing" | "verified" | "pending_review";
+  verificationResult?: VerificationResult;
+}
+
+interface VerificationResult {
+  overallStatus: "approved" | "flagged" | "rejected";
+  confidenceScore: number;
+  fields: VerificationField[];
+  processedAt: string;
+}
+
+interface DraftEmail {
+  to: string;
+  subject: string;
+  body: string;
+}
+
 // ─── DATASET ─────────────────────────────────────────────────────────────────
 const VENDOR_TRANSACTIONS: VendorTransaction[] = [
   { id: 1, vendor_name: "Infosys Ltd", category: "IT", amount: 142000, invoice_date: "2024-01-12", region: "South", status: "paid" },
@@ -351,6 +384,67 @@ export default function App() {
   const [docStored, setDocStored] = useState(false);
   const dragRef = useRef<HTMLDivElement>(null);
 
+  // CG Verification states
+  const [verificationView, setVerificationView] = useState<"inbox" | "result" | "discrepancy" | "draft">("inbox");
+  const [selectedEmail, setSelectedEmail] = useState<IncomingEmail | null>(null);
+  const [selectedField, setSelectedField] = useState<VerificationField | null>(null);
+  const [draftEmail, setDraftEmail] = useState<DraftEmail | null>(null);
+
+  // Mock data for CG Verification demo
+  const mockIncomingEmails: IncomingEmail[] = [
+    {
+      id: "email_001",
+      from: "shipping@maersk.com",
+      subject: "Bill of Lading - Container MSKU7234521",
+      receivedAt: "2024-12-28T09:45:00Z",
+      attachmentName: "BL_MSKU7234521.pdf",
+      status: "verified",
+      verificationResult: {
+        overallStatus: "flagged",
+        confidenceScore: 0.78,
+        processedAt: "2024-12-28T09:46:12Z",
+        fields: [
+          { fieldName: "Container Number", extractedValue: "MSKU7234521", expectedValue: "MSKU7234521", status: "match", confidence: 0.99, source: "Booking #BK-2024-1847" },
+          { fieldName: "Shipper Name", extractedValue: "Acme Industries Ltd", expectedValue: "Acme Industries Ltd.", status: "match", confidence: 0.95, source: "Booking #BK-2024-1847" },
+          { fieldName: "Consignee", extractedValue: "Global Imports Inc", expectedValue: "Global Imports Inc", status: "match", confidence: 0.98, source: "Booking #BK-2024-1847" },
+          { fieldName: "Port of Loading", extractedValue: "Shanghai, CN", expectedValue: "Shanghai, China", status: "match", confidence: 0.92, source: "Booking #BK-2024-1847" },
+          { fieldName: "Port of Discharge", extractedValue: "Los Angeles, US", expectedValue: "Long Beach, US", status: "mismatch", confidence: 0.88, source: "Booking #BK-2024-1847" },
+          { fieldName: "Gross Weight", extractedValue: "18,450 KG", expectedValue: "18,500 KG", status: "warning", confidence: 0.75, source: "Booking #BK-2024-1847" },
+          { fieldName: "ETD", extractedValue: "2024-12-30", expectedValue: "2024-12-30", status: "match", confidence: 0.97, source: "Booking #BK-2024-1847" },
+          { fieldName: "ETA", extractedValue: "2025-01-15", expectedValue: "2025-01-15", status: "match", confidence: 0.97, source: "Booking #BK-2024-1847" },
+        ],
+      },
+    },
+    {
+      id: "email_002",
+      from: "docs@evergreen-line.com",
+      subject: "Commercial Invoice - Shipment EG-78432",
+      receivedAt: "2024-12-28T08:30:00Z",
+      attachmentName: "Invoice_EG78432.pdf",
+      status: "pending_review",
+      verificationResult: {
+        overallStatus: "approved",
+        confidenceScore: 0.96,
+        processedAt: "2024-12-28T08:31:45Z",
+        fields: [
+          { fieldName: "Invoice Number", extractedValue: "INV-2024-78432", expectedValue: "INV-2024-78432", status: "match", confidence: 0.99, source: "PO #PO-2024-5521" },
+          { fieldName: "Vendor Name", extractedValue: "TechParts Manufacturing", expectedValue: "TechParts Manufacturing", status: "match", confidence: 0.98, source: "PO #PO-2024-5521" },
+          { fieldName: "Total Amount", extractedValue: "$45,280.00", expectedValue: "$45,280.00", status: "match", confidence: 0.99, source: "PO #PO-2024-5521" },
+          { fieldName: "Currency", extractedValue: "USD", expectedValue: "USD", status: "match", confidence: 0.99, source: "PO #PO-2024-5521" },
+          { fieldName: "Payment Terms", extractedValue: "Net 30", expectedValue: "Net 30", status: "match", confidence: 0.95, source: "PO #PO-2024-5521" },
+        ],
+      },
+    },
+    {
+      id: "email_003",
+      from: "operations@cosco.com",
+      subject: "Packing List - Container COSU4512876",
+      receivedAt: "2024-12-28T07:15:00Z",
+      attachmentName: "PackingList_COSU4512876.pdf",
+      status: "processing",
+    },
+  ];
+
   useEffect(() => {
     chatEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -595,6 +689,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
     { id: "analytics", label: "Analytics", icon: "📊" },
     { id: "documents", label: "Document Agent", icon: "📄" },
     { id: "crossquery", label: "Cross-Source Query", icon: "🔗" },
+    { id: "verification", label: "CG Verification", icon: "✓" },
   ];
 
   // ── API KEY SCREEN ────────────────────────────────────────────────────────
@@ -2369,6 +2464,847 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                   </div>
                 ))}
               </div>
+            </div>
+          </div>
+        )}
+
+        {/* ══ CG VERIFICATION TAB ══════════════════════════════════════════════ */}
+        {activeTab === "verification" && (
+          <div style={{ display: "grid", gridTemplateColumns: "320px 1fr", gap: 20, minHeight: "calc(100vh - 108px)" }}>
+            {/* Left Panel - Inbox / Navigation */}
+            <div
+              style={{
+                background: GC.white,
+                borderRadius: 12,
+                border: `1px solid ${GC.border}`,
+                display: "flex",
+                flexDirection: "column",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                overflow: "hidden",
+              }}
+            >
+              <div
+                style={{
+                  padding: "16px 20px",
+                  borderBottom: `1px solid ${GC.border}`,
+                  display: "flex",
+                  alignItems: "center",
+                  gap: 10,
+                }}
+              >
+                <div
+                  style={{
+                    width: 32,
+                    height: 32,
+                    background: "#E6F7F3",
+                    borderRadius: 8,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 15,
+                  }}
+                >
+                  ✓
+                </div>
+                <div>
+                  <div style={{ fontWeight: 600, fontSize: 14 }}>CG Verification Inbox</div>
+                  <div style={{ fontSize: 11, color: GC.gray400, marginTop: 1 }}>
+                    {mockIncomingEmails.filter(e => e.status === "processing").length} processing · {mockIncomingEmails.filter(e => e.status === "verified" || e.status === "pending_review").length} ready
+                  </div>
+                </div>
+              </div>
+
+              {/* Email List */}
+              <div style={{ flex: 1, overflowY: "auto", padding: "12px" }}>
+                {mockIncomingEmails.map((email) => (
+                  <div
+                    key={email.id}
+                    onClick={() => {
+                      setSelectedEmail(email);
+                      setSelectedField(null);
+                      setDraftEmail(null);
+                      if (email.status === "processing") {
+                        setVerificationView("inbox");
+                      } else {
+                        setVerificationView("result");
+                      }
+                    }}
+                    style={{
+                      padding: "14px 16px",
+                      marginBottom: 8,
+                      background: selectedEmail?.id === email.id ? GC.blueLight : GC.gray50,
+                      border: `1px solid ${selectedEmail?.id === email.id ? GC.blue : GC.border}`,
+                      borderRadius: 10,
+                      cursor: "pointer",
+                      transition: "all 0.15s",
+                    }}
+                  >
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 8 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: GC.gray800, lineHeight: 1.4, flex: 1 }}>
+                        {email.subject}
+                      </div>
+                      {email.status === "processing" && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            background: GC.amberLight,
+                            color: GC.amber,
+                            padding: "2px 8px",
+                            borderRadius: 10,
+                            fontWeight: 600,
+                            marginLeft: 8,
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 4,
+                          }}
+                        >
+                          <span style={{ animation: "spin 1s linear infinite", display: "inline-block" }}>⟳</span>
+                          Processing
+                        </span>
+                      )}
+                      {email.status === "verified" && email.verificationResult?.overallStatus === "flagged" && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            background: GC.redLight,
+                            color: GC.red,
+                            padding: "2px 8px",
+                            borderRadius: 10,
+                            fontWeight: 600,
+                            marginLeft: 8,
+                          }}
+                        >
+                          Flagged
+                        </span>
+                      )}
+                      {email.status === "pending_review" && email.verificationResult?.overallStatus === "approved" && (
+                        <span
+                          style={{
+                            fontSize: 10,
+                            background: GC.greenLight,
+                            color: GC.green,
+                            padding: "2px 8px",
+                            borderRadius: 10,
+                            fontWeight: 600,
+                            marginLeft: 8,
+                          }}
+                        >
+                          Verified
+                        </span>
+                      )}
+                    </div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 6 }}>
+                      <span style={{ fontSize: 11, color: GC.gray400 }}>{email.from}</span>
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 12 }}>📎</span>
+                        <span style={{ fontSize: 11, color: GC.gray600 }}>{email.attachmentName}</span>
+                      </div>
+                      <span style={{ fontSize: 10, color: GC.gray400 }}>
+                        {new Date(email.receivedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Right Panel - Dynamic Content */}
+            <div
+              style={{
+                background: GC.white,
+                borderRadius: 12,
+                border: `1px solid ${GC.border}`,
+                display: "flex",
+                flexDirection: "column",
+                boxShadow: "0 1px 4px rgba(0,0,0,0.04)",
+                overflow: "hidden",
+              }}
+            >
+              {!selectedEmail ? (
+                /* Empty State */
+                <div
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 16,
+                    padding: 40,
+                    color: GC.gray400,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 80,
+                      height: 80,
+                      background: "#E6F7F3",
+                      borderRadius: 20,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 36,
+                    }}
+                  >
+                    ✓
+                  </div>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontWeight: 700, fontSize: 18, color: GC.gray800, marginBottom: 8 }}>CG Document Verification</div>
+                    <div style={{ fontSize: 13, maxWidth: 400, lineHeight: 1.7, color: GC.gray400 }}>
+                      Select an incoming document from the inbox to view the AI-powered verification results. The agent extracts fields, compares against source data, and flags discrepancies.
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 12, marginTop: 8 }}>
+                    {(
+                      [
+                        ["📥", "Incoming", "Documents arrive from SU"],
+                        ["🔍", "Verify", "Agent extracts & compares"],
+                        ["⚠️", "Review", "CG reviews flagged fields"],
+                        ["✉️", "Reply", "Draft response to customer"],
+                      ] as const
+                    ).map(([icon, title, desc]) => (
+                      <div
+                        key={title}
+                        style={{
+                          padding: "16px 14px",
+                          background: GC.gray50,
+                          borderRadius: 10,
+                          border: `1px solid ${GC.border}`,
+                          textAlign: "center",
+                          width: 120,
+                        }}
+                      >
+                        <div style={{ fontSize: 24, marginBottom: 8 }}>{icon}</div>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: GC.gray800, marginBottom: 4 }}>{title}</div>
+                        <div style={{ fontSize: 10, color: GC.gray400, lineHeight: 1.4 }}>{desc}</div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ) : selectedEmail.status === "processing" ? (
+                /* Processing State */
+                <div
+                  style={{
+                    flex: 1,
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 20,
+                    padding: 40,
+                  }}
+                >
+                  <div
+                    style={{
+                      width: 80,
+                      height: 80,
+                      background: GC.amberLight,
+                      borderRadius: 20,
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      fontSize: 36,
+                      animation: "spin 2s linear infinite",
+                    }}
+                  >
+                    ⟳
+                  </div>
+                  <div style={{ textAlign: "center" }}>
+                    <div style={{ fontWeight: 700, fontSize: 18, color: GC.gray800, marginBottom: 8 }}>Processing Document</div>
+                    <div style={{ fontSize: 13, color: GC.gray400, marginBottom: 16 }}>{selectedEmail.attachmentName}</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8, textAlign: "left", maxWidth: 300 }}>
+                      {(
+                        [
+                          ["Extracting document fields...", true],
+                          ["Matching against booking data...", true],
+                          ["Verifying field values...", false],
+                          ["Generating verification report...", false],
+                        ] as const
+                      ).map(([step, done], i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <span
+                            style={{
+                              width: 20,
+                              height: 20,
+                              borderRadius: "50%",
+                              background: done ? GC.green : GC.gray200,
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "center",
+                              fontSize: 10,
+                              color: "white",
+                            }}
+                          >
+                            {done ? "✓" : ""}
+                          </span>
+                          <span style={{ fontSize: 12, color: done ? GC.gray600 : GC.gray400 }}>{step}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              ) : verificationView === "result" && selectedEmail.verificationResult ? (
+                /* Verification Result View */
+                <>
+                  <div
+                    style={{
+                      padding: "16px 20px",
+                      borderBottom: `1px solid ${GC.border}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <div
+                        style={{
+                          width: 40,
+                          height: 40,
+                          background: selectedEmail.verificationResult.overallStatus === "flagged" ? GC.redLight : GC.greenLight,
+                          borderRadius: 10,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 18,
+                        }}
+                      >
+                        {selectedEmail.verificationResult.overallStatus === "flagged" ? "⚠️" : "✓"}
+                      </div>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>Verification Result</div>
+                        <div style={{ fontSize: 11, color: GC.gray400, marginTop: 2 }}>
+                          {selectedEmail.attachmentName} · Confidence: {Math.round(selectedEmail.verificationResult.confidenceScore * 100)}%
+                        </div>
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <span
+                        style={{
+                          padding: "6px 12px",
+                          background: selectedEmail.verificationResult.overallStatus === "flagged" ? GC.redLight : GC.greenLight,
+                          color: selectedEmail.verificationResult.overallStatus === "flagged" ? GC.red : GC.green,
+                          borderRadius: 8,
+                          fontSize: 12,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {selectedEmail.verificationResult.overallStatus === "flagged"
+                          ? `${selectedEmail.verificationResult.fields.filter((f) => f.status !== "match").length} Discrepancies Found`
+                          : "All Fields Verified"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Field-by-field view */}
+                  <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+                    <div style={{ marginBottom: 16 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: GC.gray400, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 12 }}>
+                        Field Verification Results
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                        {selectedEmail.verificationResult.fields.map((field, i) => (
+                          <div
+                            key={i}
+                            onClick={() => {
+                              if (field.status !== "match") {
+                                setSelectedField(field);
+                                setVerificationView("discrepancy");
+                              }
+                            }}
+                            style={{
+                              padding: "14px 18px",
+                              background: field.status === "match" ? GC.gray50 : field.status === "mismatch" ? GC.redLight : GC.amberLight,
+                              border: `1px solid ${field.status === "match" ? GC.border : field.status === "mismatch" ? "#FECACA" : "#FED7AA"}`,
+                              borderRadius: 10,
+                              cursor: field.status !== "match" ? "pointer" : "default",
+                              transition: "all 0.15s",
+                            }}
+                          >
+                            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 12, flex: 1 }}>
+                                <span
+                                  style={{
+                                    width: 28,
+                                    height: 28,
+                                    borderRadius: 7,
+                                    background: field.status === "match" ? GC.green : field.status === "mismatch" ? GC.red : GC.amber,
+                                    display: "flex",
+                                    alignItems: "center",
+                                    justifyContent: "center",
+                                    color: "white",
+                                    fontSize: 12,
+                                    fontWeight: 700,
+                                  }}
+                                >
+                                  {field.status === "match" ? "✓" : field.status === "mismatch" ? "✗" : "!"}
+                                </span>
+                                <div style={{ flex: 1 }}>
+                                  <div style={{ fontWeight: 600, fontSize: 13, color: GC.gray800, marginBottom: 4 }}>{field.fieldName}</div>
+                                  <div style={{ fontSize: 12, color: GC.gray600 }}>
+                                    <span style={{ fontWeight: 500 }}>Extracted:</span> {field.extractedValue}
+                                  </div>
+                                </div>
+                              </div>
+                              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                                <span style={{ fontSize: 11, color: GC.gray400 }}>{Math.round(field.confidence * 100)}% confidence</span>
+                                {field.status !== "match" && (
+                                  <span style={{ fontSize: 12, color: GC.blue, fontWeight: 500 }}>View Details →</span>
+                                )}
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Action buttons */}
+                  <div
+                    style={{
+                      padding: "16px 20px",
+                      borderTop: `1px solid ${GC.border}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: GC.gray50,
+                    }}
+                  >
+                    <div style={{ fontSize: 12, color: GC.gray400 }}>
+                      Processed at {new Date(selectedEmail.verificationResult.processedAt).toLocaleString()}
+                    </div>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {selectedEmail.verificationResult.overallStatus === "flagged" && (
+                        <button
+                          onClick={() => {
+                            setDraftEmail({
+                              to: selectedEmail.from,
+                              subject: `Re: ${selectedEmail.subject} - Verification Required`,
+                              body: `Dear Team,\n\nWe have reviewed the attached document (${selectedEmail.attachmentName}) and identified the following discrepancies that require clarification:\n\n${selectedEmail.verificationResult!.fields
+                                .filter((f) => f.status !== "match")
+                                .map(
+                                  (f) =>
+                                    `• ${f.fieldName}:\n  - Document shows: ${f.extractedValue}\n  - Our records show: ${f.expectedValue}`
+                                )
+                                .join("\n\n")}\n\nPlease review and provide updated documentation or clarification at your earliest convenience.\n\nBest regards,\nGoComet Control Group`,
+                            });
+                            setVerificationView("draft");
+                          }}
+                          className="gc-btn-primary"
+                          style={{ padding: "10px 20px", fontSize: 13, borderRadius: 8, display: "flex", alignItems: "center", gap: 6 }}
+                        >
+                          ✉️ Draft Reply
+                        </button>
+                      )}
+                      <button
+                        onClick={() => {
+                          alert("Document approved and stored!");
+                        }}
+                        style={{
+                          padding: "10px 20px",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          borderRadius: 8,
+                          border: `1px solid ${GC.green}`,
+                          background: GC.greenLight,
+                          color: GC.green,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 6,
+                        }}
+                      >
+                        ✓ Approve Document
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : verificationView === "discrepancy" && selectedField ? (
+                /* Discrepancy Detail View */
+                <>
+                  <div
+                    style={{
+                      padding: "16px 20px",
+                      borderBottom: `1px solid ${GC.border}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <button
+                        onClick={() => {
+                          setVerificationView("result");
+                          setSelectedField(null);
+                        }}
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          border: `1px solid ${GC.border}`,
+                          background: GC.white,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 14,
+                        }}
+                      >
+                        ←
+                      </button>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>Discrepancy Detail</div>
+                        <div style={{ fontSize: 11, color: GC.gray400, marginTop: 2 }}>{selectedField.fieldName}</div>
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        padding: "6px 12px",
+                        background: selectedField.status === "mismatch" ? GC.redLight : GC.amberLight,
+                        color: selectedField.status === "mismatch" ? GC.red : GC.amber,
+                        borderRadius: 8,
+                        fontSize: 12,
+                        fontWeight: 600,
+                      }}
+                    >
+                      {selectedField.status === "mismatch" ? "Mismatch Detected" : "Warning - Review Required"}
+                    </span>
+                  </div>
+
+                  <div style={{ flex: 1, padding: 24 }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 60px 1fr", gap: 20, marginBottom: 30 }}>
+                      {/* Found Value */}
+                      <div
+                        style={{
+                          padding: 24,
+                          background: selectedField.status === "mismatch" ? GC.redLight : GC.amberLight,
+                          borderRadius: 12,
+                          border: `2px solid ${selectedField.status === "mismatch" ? "#FECACA" : "#FED7AA"}`,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 600, color: GC.gray400, textTransform: "uppercase", marginBottom: 12 }}>
+                          📄 Found in Document
+                        </div>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: GC.gray800, marginBottom: 8 }}>{selectedField.extractedValue}</div>
+                        <div style={{ fontSize: 12, color: GC.gray400 }}>{selectedEmail?.attachmentName}</div>
+                      </div>
+
+                      {/* Arrow */}
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div
+                          style={{
+                            width: 40,
+                            height: 40,
+                            borderRadius: "50%",
+                            background: GC.gray100,
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "center",
+                            fontSize: 16,
+                          }}
+                        >
+                          ≠
+                        </div>
+                      </div>
+
+                      {/* Expected Value */}
+                      <div
+                        style={{
+                          padding: 24,
+                          background: GC.blueLight,
+                          borderRadius: 12,
+                          border: `2px solid ${GC.blue}30`,
+                        }}
+                      >
+                        <div style={{ fontSize: 11, fontWeight: 600, color: GC.gray400, textTransform: "uppercase", marginBottom: 12 }}>
+                          📋 Expected from Source
+                        </div>
+                        <div style={{ fontSize: 20, fontWeight: 700, color: GC.gray800, marginBottom: 8 }}>{selectedField.expectedValue}</div>
+                        <div style={{ fontSize: 12, color: GC.blue }}>{selectedField.source}</div>
+                      </div>
+                    </div>
+
+                    {/* Additional Info */}
+                    <div style={{ background: GC.gray50, borderRadius: 12, padding: 20 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: GC.gray800, marginBottom: 16 }}>Analysis</div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                        <div>
+                          <div style={{ fontSize: 11, color: GC.gray400, marginBottom: 4 }}>Extraction Confidence</div>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <div
+                              style={{
+                                flex: 1,
+                                height: 8,
+                                background: GC.gray200,
+                                borderRadius: 4,
+                                overflow: "hidden",
+                              }}
+                            >
+                              <div
+                                style={{
+                                  width: `${selectedField.confidence * 100}%`,
+                                  height: "100%",
+                                  background: selectedField.confidence >= 0.9 ? GC.green : selectedField.confidence >= 0.7 ? GC.amber : GC.red,
+                                }}
+                              />
+                            </div>
+                            <span style={{ fontSize: 12, fontWeight: 600, color: GC.gray600 }}>{Math.round(selectedField.confidence * 100)}%</span>
+                          </div>
+                        </div>
+                        <div>
+                          <div style={{ fontSize: 11, color: GC.gray400, marginBottom: 4 }}>Source Reference</div>
+                          <div style={{ fontSize: 13, fontWeight: 500, color: GC.blue }}>{selectedField.source}</div>
+                        </div>
+                      </div>
+                      <div style={{ marginTop: 16, padding: 14, background: GC.white, borderRadius: 8, border: `1px solid ${GC.border}` }}>
+                        <div style={{ fontSize: 12, color: GC.gray600, lineHeight: 1.6 }}>
+                          {selectedField.status === "mismatch"
+                            ? `The extracted value "${selectedField.extractedValue}" does not match the expected value "${selectedField.expectedValue}" from the source system. This discrepancy requires manual review and potentially communication with the sender.`
+                            : `The extracted value "${selectedField.extractedValue}" differs slightly from the expected value "${selectedField.expectedValue}". This may be due to formatting differences or minor data variations. Please verify if this is acceptable.`}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div
+                    style={{
+                      padding: "16px 20px",
+                      borderTop: `1px solid ${GC.border}`,
+                      display: "flex",
+                      justifyContent: "flex-end",
+                      gap: 10,
+                      background: GC.gray50,
+                    }}
+                  >
+                    <button
+                      onClick={() => {
+                        setVerificationView("result");
+                        setSelectedField(null);
+                      }}
+                      style={{
+                        padding: "10px 20px",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        borderRadius: 8,
+                        border: `1px solid ${GC.border}`,
+                        background: GC.white,
+                        color: GC.gray600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Back to Results
+                    </button>
+                    <button
+                      onClick={() => alert("Field marked as acceptable")}
+                      style={{
+                        padding: "10px 20px",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        borderRadius: 8,
+                        border: `1px solid ${GC.green}`,
+                        background: GC.greenLight,
+                        color: GC.green,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Accept Anyway
+                    </button>
+                  </div>
+                </>
+              ) : verificationView === "draft" && draftEmail ? (
+                /* Draft Reply View */
+                <>
+                  <div
+                    style={{
+                      padding: "16px 20px",
+                      borderBottom: `1px solid ${GC.border}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                      <button
+                        onClick={() => {
+                          setVerificationView("result");
+                          setDraftEmail(null);
+                        }}
+                        style={{
+                          width: 32,
+                          height: 32,
+                          borderRadius: 8,
+                          border: `1px solid ${GC.border}`,
+                          background: GC.white,
+                          cursor: "pointer",
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 14,
+                        }}
+                      >
+                        ←
+                      </button>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 14 }}>Draft Reply</div>
+                        <div style={{ fontSize: 11, color: GC.gray400, marginTop: 2 }}>AI-generated response for discrepancies</div>
+                      </div>
+                    </div>
+                    <span
+                      style={{
+                        padding: "6px 12px",
+                        background: GC.blueLight,
+                        color: GC.blue,
+                        borderRadius: 8,
+                        fontSize: 11,
+                        fontWeight: 600,
+                      }}
+                    >
+                      ✨ AI Generated
+                    </span>
+                  </div>
+
+                  <div style={{ flex: 1, padding: 24, display: "flex", flexDirection: "column", gap: 16 }}>
+                    {/* Email Fields */}
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: GC.gray400, textTransform: "uppercase", letterSpacing: "0.07em" }}>To</label>
+                      <input
+                        type="text"
+                        value={draftEmail.to}
+                        onChange={(e) => setDraftEmail({ ...draftEmail, to: e.target.value })}
+                        style={{
+                          width: "100%",
+                          marginTop: 6,
+                          padding: "10px 14px",
+                          border: `1px solid ${GC.border}`,
+                          borderRadius: 8,
+                          fontSize: 13,
+                          color: GC.gray800,
+                          background: GC.gray50,
+                        }}
+                      />
+                    </div>
+                    <div>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: GC.gray400, textTransform: "uppercase", letterSpacing: "0.07em" }}>Subject</label>
+                      <input
+                        type="text"
+                        value={draftEmail.subject}
+                        onChange={(e) => setDraftEmail({ ...draftEmail, subject: e.target.value })}
+                        style={{
+                          width: "100%",
+                          marginTop: 6,
+                          padding: "10px 14px",
+                          border: `1px solid ${GC.border}`,
+                          borderRadius: 8,
+                          fontSize: 13,
+                          color: GC.gray800,
+                          background: GC.gray50,
+                        }}
+                      />
+                    </div>
+                    <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
+                      <label style={{ fontSize: 11, fontWeight: 600, color: GC.gray400, textTransform: "uppercase", letterSpacing: "0.07em" }}>Message</label>
+                      <textarea
+                        value={draftEmail.body}
+                        onChange={(e) => setDraftEmail({ ...draftEmail, body: e.target.value })}
+                        style={{
+                          flex: 1,
+                          width: "100%",
+                          marginTop: 6,
+                          padding: "14px",
+                          border: `1px solid ${GC.border}`,
+                          borderRadius: 8,
+                          fontSize: 13,
+                          color: GC.gray800,
+                          background: GC.gray50,
+                          resize: "none",
+                          lineHeight: 1.6,
+                          fontFamily: "Inter, sans-serif",
+                          minHeight: 300,
+                        }}
+                      />
+                    </div>
+
+                    {/* AI suggestion pills */}
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                      <span style={{ fontSize: 11, color: GC.gray400, paddingTop: 4 }}>Quick edits:</span>
+                      {["Make more formal", "Add urgency", "Request call", "Shorten message"].map((action) => (
+                        <button
+                          key={action}
+                          onClick={() => alert(`Applying: ${action}`)}
+                          style={{
+                            padding: "6px 12px",
+                            fontSize: 11,
+                            borderRadius: 20,
+                            border: `1px solid ${GC.border}`,
+                            background: GC.white,
+                            color: GC.gray600,
+                            cursor: "pointer",
+                          }}
+                        >
+                          {action}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div
+                    style={{
+                      padding: "16px 20px",
+                      borderTop: `1px solid ${GC.border}`,
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      background: GC.gray50,
+                    }}
+                  >
+                    <button
+                      onClick={() => {
+                        setVerificationView("result");
+                        setDraftEmail(null);
+                      }}
+                      style={{
+                        padding: "10px 20px",
+                        fontSize: 13,
+                        fontWeight: 600,
+                        borderRadius: 8,
+                        border: `1px solid ${GC.border}`,
+                        background: GC.white,
+                        color: GC.gray600,
+                        cursor: "pointer",
+                      }}
+                    >
+                      Discard
+                    </button>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      <button
+                        onClick={() => alert("Email saved as draft")}
+                        style={{
+                          padding: "10px 20px",
+                          fontSize: 13,
+                          fontWeight: 600,
+                          borderRadius: 8,
+                          border: `1px solid ${GC.border}`,
+                          background: GC.white,
+                          color: GC.gray600,
+                          cursor: "pointer",
+                        }}
+                      >
+                        Save Draft
+                      </button>
+                      <button
+                        onClick={() => alert("Email sent to " + draftEmail.to)}
+                        className="gc-btn-primary"
+                        style={{ padding: "10px 24px", fontSize: 13, borderRadius: 8, display: "flex", alignItems: "center", gap: 6 }}
+                      >
+                        Send Email →
+                      </button>
+                    </div>
+                  </div>
+                </>
+              ) : null}
             </div>
           </div>
         )}
