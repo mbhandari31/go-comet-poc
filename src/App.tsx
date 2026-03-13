@@ -111,6 +111,46 @@ interface DraftEmail {
   body: string;
 }
 
+// Verified document for storage and analytics
+interface VerifiedDocument {
+  doc_id: string;
+  document_type: string;
+  sender_email: string;
+  received_at: string;
+  verified_at: string;
+  overall_status: "approved" | "flagged" | "rejected";
+  confidence_score: number;
+  container_number?: string;
+  consignee?: string;
+  shipper?: string;
+  port_of_loading?: string;
+  port_of_discharge?: string;
+  gross_weight?: string;
+  hs_code?: string;
+  incoterms?: string;
+  description_of_goods?: string;
+  total_discrepancies: number;
+  source_file: string;
+  booking_reference: string;
+}
+
+// Customer reference data (booking/shipment requirements)
+interface CustomerBooking {
+  booking_id: string;
+  customer_name: string;
+  container_number: string;
+  consignee: string;
+  shipper: string;
+  port_of_loading: string;
+  port_of_discharge: string;
+  gross_weight: string;
+  hs_code: string;
+  incoterms: string;
+  description_of_goods: string;
+  etd: string;
+  eta: string;
+}
+
 // ─── DATASET ─────────────────────────────────────────────────────────────────
 const VENDOR_TRANSACTIONS: VendorTransaction[] = [
   { id: 1, vendor_name: "Infosys Ltd", category: "IT", amount: 142000, invoice_date: "2024-01-12", region: "South", status: "paid" },
@@ -167,17 +207,24 @@ const VENDOR_TRANSACTIONS: VendorTransaction[] = [
 function runSQL(
   sql: string,
   vendorData: VendorTransaction[],
-  extractedDocs: ExtractedDocument[]
+  extractedDocs: ExtractedDocument[],
+  verifiedDocs: VerifiedDocument[] = []
 ): { rows: Record<string, unknown>[]; rowCount: number; error: string | null } {
   try {
     const s = sql.trim().toLowerCase();
     const useVendor = s.includes("vendor_transactions");
     const useDocs = s.includes("extracted_documents");
+    const useVerified = s.includes("verified_documents");
     let rows: Record<string, unknown>[] = [];
 
-    if (useVendor && !useDocs) rows = vendorData.map((r) => ({ ...r }));
-    else if (useDocs && !useVendor) rows = extractedDocs.map((r) => ({ ...r }));
-    else if (useVendor && useDocs) {
+    if (useVerified && !useVendor && !useDocs) {
+      // Query only verified_documents
+      rows = verifiedDocs.map((r) => ({ ...r }));
+    } else if (useVendor && !useDocs && !useVerified) {
+      rows = vendorData.map((r) => ({ ...r }));
+    } else if (useDocs && !useVendor && !useVerified) {
+      rows = extractedDocs.map((r) => ({ ...r }));
+    } else if (useVendor && useDocs) {
       rows = vendorData.map((v) => {
         const match = extractedDocs.find(
           (d) =>
@@ -195,6 +242,9 @@ function runSQL(
       });
       if (s.includes("where") && s.includes("in_documents"))
         rows = rows.filter((r) => r.in_documents === "Yes");
+    } else if (useVerified) {
+      // If verified_documents is queried with other tables, return verified docs
+      rows = verifiedDocs.map((r) => ({ ...r }));
     } else {
       rows = vendorData.map((r) => ({ ...r }));
     }
@@ -243,6 +293,19 @@ function runSQL(
       if (amtGt) rows = rows.filter((r) => ((r.amount as number) || 0) > parseInt(amtGt[1]));
       const amtLt = wherePart.match(/amount\s*<\s*(\d+)/);
       if (amtLt) rows = rows.filter((r) => ((r.amount as number) || 0) < parseInt(amtLt[1]));
+      // verified_documents filters
+      const overallStatusMatch = wherePart.match(/overall_status\s*=\s*'([^']+)'/);
+      if (overallStatusMatch) rows = rows.filter((r) => ((r.overall_status as string) || "").toLowerCase() === overallStatusMatch[1].toLowerCase());
+      const containerMatch = wherePart.match(/container_number\s*(like|=)\s*'([^']+)'/);
+      if (containerMatch) {
+        const c = containerMatch[2].replace(/%/g, "");
+        rows = rows.filter((r) => ((r.container_number as string) || "").toLowerCase().includes(c.toLowerCase()));
+      }
+      const consigneeMatch = wherePart.match(/consignee\s*(like|=)\s*'([^']+)'/);
+      if (consigneeMatch) {
+        const c = consigneeMatch[2].replace(/%/g, "");
+        rows = rows.filter((r) => ((r.consignee as string) || "").toLowerCase().includes(c.toLowerCase()));
+      }
     }
 
     if (s.includes("group by")) {
@@ -389,8 +452,45 @@ export default function App() {
   const [selectedEmail, setSelectedEmail] = useState<IncomingEmail | null>(null);
   const [selectedField, setSelectedField] = useState<VerificationField | null>(null);
   const [draftEmail, setDraftEmail] = useState<DraftEmail | null>(null);
+  const [incomingEmails, setIncomingEmails] = useState<IncomingEmail[]>([]);
+  const [verifiedDocuments, setVerifiedDocuments] = useState<VerifiedDocument[]>([]);
+  const [cgUploading, setCgUploading] = useState(false);
 
-  // Mock data for CG Verification demo
+  // Customer booking reference data (simulates data from booking system)
+  const CUSTOMER_BOOKINGS: CustomerBooking[] = [
+    {
+      booking_id: "BK-2024-1847",
+      customer_name: "Global Imports Inc",
+      container_number: "MSKU7234521",
+      consignee: "Global Imports Inc",
+      shipper: "Acme Industries Ltd",
+      port_of_loading: "Shanghai, China",
+      port_of_discharge: "Long Beach, US",
+      gross_weight: "18,500 KG",
+      hs_code: "8471.30",
+      incoterms: "CIF",
+      description_of_goods: "Electronic Components - Computer Parts",
+      etd: "2024-12-30",
+      eta: "2025-01-15",
+    },
+    {
+      booking_id: "BK-2024-1923",
+      customer_name: "TechParts Manufacturing",
+      container_number: "COSU4512876",
+      consignee: "TechParts Manufacturing",
+      shipper: "Shenzhen Electronics Co",
+      port_of_loading: "Shenzhen, China",
+      port_of_discharge: "Los Angeles, US",
+      gross_weight: "22,000 KG",
+      hs_code: "8542.31",
+      incoterms: "FOB",
+      description_of_goods: "Integrated Circuits and Semiconductors",
+      etd: "2025-01-05",
+      eta: "2025-01-20",
+    },
+  ];
+
+  // Mock data for CG Verification demo (initial examples)
   const mockIncomingEmails: IncomingEmail[] = [
     {
       id: "email_001",
@@ -456,7 +556,10 @@ export default function App() {
    - status: 'paid','pending'
    - 48 rows, date range: 2024-01-01 to 2024-12-31
 2. extracted_documents(doc_id, vendor_name, invoice_date, total_amount, line_items, confidence, uploaded_at)
-   - ${extractedDocs.length} row(s) currently${extractedDocs.length > 0 ? ": " + extractedDocs.map((d) => d.vendor_name).join(", ") : ""}`;
+   - ${extractedDocs.length} row(s) currently${extractedDocs.length > 0 ? ": " + extractedDocs.map((d) => d.vendor_name).join(", ") : ""}
+3. verified_documents(doc_id, document_type, sender_email, received_at, verified_at, overall_status, confidence_score, container_number, consignee, shipper, port_of_loading, port_of_discharge, gross_weight, hs_code, incoterms, description_of_goods, total_discrepancies, source_file, booking_reference)
+   - overall_status: 'approved','flagged','rejected'
+   - ${verifiedDocuments.length} row(s) currently${verifiedDocuments.length > 0 ? ": " + verifiedDocuments.map((d) => d.container_number || d.consignee).join(", ") : ""}`;
 
   async function askAI(question: string, history: Message[]) {
     const sys = `You are a precise data analyst. Answer questions about vendor procurement data.
@@ -505,7 +608,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
     try {
       const result = await askAI(q, messages);
       let qr = { rows: [] as Record<string, unknown>[], rowCount: 0, error: null as string | null };
-      if (result.sql?.trim()) qr = runSQL(result.sql, VENDOR_TRANSACTIONS, extractedDocs);
+      if (result.sql?.trim()) qr = runSQL(result.sql, VENDOR_TRANSACTIONS, extractedDocs, verifiedDocuments);
       setMessages((prev) => [
         ...prev,
         {
@@ -553,6 +656,285 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
     }
 
     return images;
+  }
+
+  // ─── CG VERIFICATION AGENT FUNCTIONS ────────────────────────────────────────
+
+  // Extract trade document fields using vision AI
+  async function extractTradeDocument(file: File): Promise<Record<string, { value: string; confidence: number }>> {
+    const isImg = file.type.startsWith("image/");
+    const isPdf = file.type === "application/pdf";
+
+    const extractPrompt = `Extract structured data from this trade/shipping document (Bill of Lading, Commercial Invoice, Packing List, etc.).
+Return ONLY valid JSON with confidence scores (0.0-1.0) for each field:
+{
+  "document_type": {"value": "Bill of Lading|Commercial Invoice|Packing List|Certificate of Origin|Other", "confidence": 0.0},
+  "container_number": {"value": "", "confidence": 0.0},
+  "consignee": {"value": "", "confidence": 0.0},
+  "shipper": {"value": "", "confidence": 0.0},
+  "port_of_loading": {"value": "", "confidence": 0.0},
+  "port_of_discharge": {"value": "", "confidence": 0.0},
+  "gross_weight": {"value": "", "confidence": 0.0},
+  "hs_code": {"value": "", "confidence": 0.0},
+  "incoterms": {"value": "", "confidence": 0.0},
+  "description_of_goods": {"value": "", "confidence": 0.0},
+  "etd": {"value": "YYYY-MM-DD or empty", "confidence": 0.0},
+  "eta": {"value": "YYYY-MM-DD or empty", "confidence": 0.0},
+  "invoice_number": {"value": "", "confidence": 0.0},
+  "total_amount": {"value": "", "confidence": 0.0}
+}
+For any field not found, use empty string and confidence 0. Be conservative with confidence - only use >0.9 if clearly legible.`;
+
+    let content: Array<{ type: string; image_url?: { url: string }; text?: string }> = [];
+
+    if (isImg) {
+      const base64 = await new Promise<string>((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result as string);
+        r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      content = [
+        { type: "image_url", image_url: { url: base64 } },
+        { type: "text", text: extractPrompt },
+      ];
+    } else if (isPdf) {
+      const images = await pdfToImages(file);
+      for (const img of images) {
+        content.push({ type: "image_url", image_url: { url: img } });
+      }
+      content.push({ type: "text", text: extractPrompt });
+    } else {
+      throw new Error("Unsupported file type");
+    }
+
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${apiKey.trim()}`,
+      },
+      body: JSON.stringify({
+        model: "gpt-4o",
+        max_tokens: 1500,
+        messages: [{ role: "user", content }],
+      }),
+    });
+
+    const d = await res.json();
+    if (d.error) throw new Error(d.error.message);
+
+    return JSON.parse(
+      d.choices[0].message.content
+        .trim()
+        .replace(/```json|```/g, "")
+        .trim()
+    );
+  }
+
+  // Compare extracted fields against customer booking requirements
+  function compareWithBooking(
+    extracted: Record<string, { value: string; confidence: number }>,
+    booking: CustomerBooking
+  ): VerificationField[] {
+    const fields: VerificationField[] = [];
+    const bookingRef = `Booking #${booking.booking_id}`;
+
+    const fieldMappings: Array<{ fieldName: string; extractedKey: string; expectedKey: keyof CustomerBooking }> = [
+      { fieldName: "Container Number", extractedKey: "container_number", expectedKey: "container_number" },
+      { fieldName: "Consignee", extractedKey: "consignee", expectedKey: "consignee" },
+      { fieldName: "Shipper", extractedKey: "shipper", expectedKey: "shipper" },
+      { fieldName: "Port of Loading", extractedKey: "port_of_loading", expectedKey: "port_of_loading" },
+      { fieldName: "Port of Discharge", extractedKey: "port_of_discharge", expectedKey: "port_of_discharge" },
+      { fieldName: "Gross Weight", extractedKey: "gross_weight", expectedKey: "gross_weight" },
+      { fieldName: "HS Code", extractedKey: "hs_code", expectedKey: "hs_code" },
+      { fieldName: "Incoterms", extractedKey: "incoterms", expectedKey: "incoterms" },
+      { fieldName: "Description of Goods", extractedKey: "description_of_goods", expectedKey: "description_of_goods" },
+      { fieldName: "ETD", extractedKey: "etd", expectedKey: "etd" },
+      { fieldName: "ETA", extractedKey: "eta", expectedKey: "eta" },
+    ];
+
+    for (const mapping of fieldMappings) {
+      const extractedField = extracted[mapping.extractedKey];
+      const extractedValue = extractedField?.value || "";
+      const expectedValue = booking[mapping.expectedKey] || "";
+      const confidence = extractedField?.confidence || 0;
+
+      let status: "match" | "mismatch" | "warning" = "match";
+
+      if (!extractedValue || confidence < 0.5) {
+        // Low confidence or missing - flag as warning (uncertain)
+        status = "warning";
+      } else {
+        // Normalize values for comparison
+        const normalizedExtracted = extractedValue.toLowerCase().replace(/[.,\s]+/g, " ").trim();
+        const normalizedExpected = expectedValue.toLowerCase().replace(/[.,\s]+/g, " ").trim();
+
+        if (normalizedExtracted === normalizedExpected) {
+          status = "match";
+        } else if (
+          normalizedExtracted.includes(normalizedExpected.split(" ")[0]) ||
+          normalizedExpected.includes(normalizedExtracted.split(" ")[0])
+        ) {
+          // Partial match - might be formatting difference
+          status = confidence >= 0.85 ? "match" : "warning";
+        } else {
+          status = "mismatch";
+        }
+      }
+
+      fields.push({
+        fieldName: mapping.fieldName,
+        extractedValue: extractedValue || "(not found)",
+        expectedValue,
+        status,
+        confidence,
+        source: bookingRef,
+      });
+    }
+
+    return fields;
+  }
+
+  // Find matching booking based on extracted container number or other identifiers
+  function findMatchingBooking(extracted: Record<string, { value: string; confidence: number }>): CustomerBooking | null {
+    const containerNum = extracted.container_number?.value;
+    const consignee = extracted.consignee?.value;
+
+    // Try to match by container number first
+    if (containerNum) {
+      const match = CUSTOMER_BOOKINGS.find(
+        (b) => b.container_number.toLowerCase() === containerNum.toLowerCase()
+      );
+      if (match) return match;
+    }
+
+    // Try to match by consignee name
+    if (consignee) {
+      const match = CUSTOMER_BOOKINGS.find((b) =>
+        b.consignee.toLowerCase().includes(consignee.toLowerCase().split(" ")[0]) ||
+        consignee.toLowerCase().includes(b.consignee.toLowerCase().split(" ")[0])
+      );
+      if (match) return match;
+    }
+
+    // Return first booking as default for demo purposes
+    return CUSTOMER_BOOKINGS[0];
+  }
+
+  // Process incoming document through the verification agent
+  async function processIncomingDocument(file: File, senderEmail: string = "documents@supplier.com") {
+    const emailId = `email_${Date.now()}`;
+    const newEmail: IncomingEmail = {
+      id: emailId,
+      from: senderEmail,
+      subject: `Document Verification - ${file.name}`,
+      receivedAt: new Date().toISOString(),
+      attachmentName: file.name,
+      status: "processing",
+    };
+
+    // Add to inbox immediately as "processing"
+    setIncomingEmails((prev) => [newEmail, ...prev]);
+    setSelectedEmail(newEmail);
+    setVerificationView("inbox");
+
+    try {
+      // Step 1: Extract fields from document
+      const extracted = await extractTradeDocument(file);
+      console.log("Extracted fields:", extracted);
+
+      // Step 2: Find matching booking
+      const booking = findMatchingBooking(extracted);
+      if (!booking) {
+        throw new Error("No matching booking found for this document");
+      }
+
+      // Step 3: Compare extracted vs expected
+      const verificationFields = compareWithBooking(extracted, booking);
+
+      // Step 4: Calculate overall status and confidence
+      const mismatches = verificationFields.filter((f) => f.status === "mismatch").length;
+      const warnings = verificationFields.filter((f) => f.status === "warning").length;
+      const avgConfidence =
+        verificationFields.reduce((sum, f) => sum + f.confidence, 0) / verificationFields.length;
+
+      let overallStatus: "approved" | "flagged" | "rejected" = "approved";
+      if (mismatches > 0) {
+        overallStatus = mismatches >= 3 ? "rejected" : "flagged";
+      } else if (warnings > 2 || avgConfidence < 0.7) {
+        overallStatus = "flagged";
+      }
+
+      const verificationResult: VerificationResult = {
+        overallStatus,
+        confidenceScore: avgConfidence,
+        fields: verificationFields,
+        processedAt: new Date().toISOString(),
+      };
+
+      // Update email with verification result
+      const updatedEmail: IncomingEmail = {
+        ...newEmail,
+        status: overallStatus === "approved" ? "pending_review" : "verified",
+        verificationResult,
+      };
+
+      setIncomingEmails((prev) =>
+        prev.map((e) => (e.id === emailId ? updatedEmail : e))
+      );
+      setSelectedEmail(updatedEmail);
+      setVerificationView("result");
+    } catch (error) {
+      console.error("Verification error:", error);
+      // Update email to show error state
+      setIncomingEmails((prev) =>
+        prev.map((e) =>
+          e.id === emailId
+            ? {
+                ...e,
+                status: "verified",
+                verificationResult: {
+                  overallStatus: "rejected",
+                  confidenceScore: 0,
+                  fields: [],
+                  processedAt: new Date().toISOString(),
+                },
+              }
+            : e
+        )
+      );
+    }
+  }
+
+  // Store verified document for analytics
+  function storeVerifiedDocument(email: IncomingEmail) {
+    if (!email.verificationResult) return;
+
+    const doc: VerifiedDocument = {
+      doc_id: `vdoc_${Date.now()}`,
+      document_type: email.verificationResult.fields.find((f) => f.fieldName === "Document Type")?.extractedValue || "Trade Document",
+      sender_email: email.from,
+      received_at: email.receivedAt,
+      verified_at: email.verificationResult.processedAt,
+      overall_status: email.verificationResult.overallStatus,
+      confidence_score: email.verificationResult.confidenceScore,
+      container_number: email.verificationResult.fields.find((f) => f.fieldName === "Container Number")?.extractedValue,
+      consignee: email.verificationResult.fields.find((f) => f.fieldName === "Consignee")?.extractedValue,
+      shipper: email.verificationResult.fields.find((f) => f.fieldName === "Shipper")?.extractedValue,
+      port_of_loading: email.verificationResult.fields.find((f) => f.fieldName === "Port of Loading")?.extractedValue,
+      port_of_discharge: email.verificationResult.fields.find((f) => f.fieldName === "Port of Discharge")?.extractedValue,
+      gross_weight: email.verificationResult.fields.find((f) => f.fieldName === "Gross Weight")?.extractedValue,
+      hs_code: email.verificationResult.fields.find((f) => f.fieldName === "HS Code")?.extractedValue,
+      incoterms: email.verificationResult.fields.find((f) => f.fieldName === "Incoterms")?.extractedValue,
+      description_of_goods: email.verificationResult.fields.find((f) => f.fieldName === "Description of Goods")?.extractedValue,
+      total_discrepancies: email.verificationResult.fields.filter((f) => f.status !== "match").length,
+      source_file: email.attachmentName,
+      booking_reference: email.verificationResult.fields[0]?.source || "",
+    };
+
+    setVerifiedDocuments((prev) => [...prev, doc]);
+    return doc;
   }
 
   async function handleExtract(file: File) {
@@ -661,6 +1043,13 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
     "Compare spend across regions",
     "Which invoices are still pending?",
     "Top 5 vendors by spend amount",
+    ...(verifiedDocuments.length > 0
+      ? [
+          "Show all verified documents",
+          "Which verified documents were flagged?",
+          "Show verified documents by port of discharge",
+        ]
+      : []),
   ];
 
   // GoComet color palette
@@ -952,7 +1341,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
               }}
             ></div>
             <span style={{ fontSize: 12, color: GC.gray600, fontWeight: 500 }}>
-              {extractedDocs.length} doc{extractedDocs.length !== 1 ? "s" : ""} stored
+              {extractedDocs.length + verifiedDocuments.length} doc{(extractedDocs.length + verifiedDocuments.length) !== 1 ? "s" : ""} stored
             </span>
           </div>
         </div>
@@ -2053,8 +2442,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                         fontWeight: 500,
                       }}
                     >
-                      🔗 Cross-source mode active — Claude can JOIN vendor_transactions with {extractedDocs.length} stored document(s):{" "}
-                      <strong>{extractedDocs.map((d) => d.vendor_name).join(", ")}</strong>
+                      🔗 Cross-source mode active — Claude can JOIN vendor_transactions with {extractedDocs.length} extracted doc(s){verifiedDocuments.length > 0 ? ` and ${verifiedDocuments.length} verified doc(s)` : ""}
                     </div>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {[
@@ -2062,6 +2450,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                         "Show vendors present in both data lake and uploaded documents",
                         `Compare invoice amount for ${extractedDocs[0]?.vendor_name?.split(" ")[0]} vs lake records`,
                         "Which uploaded vendor has highest data lake spend?",
+                        ...(verifiedDocuments.length > 0 ? ["Show all verified trade documents", "Which verified documents have discrepancies?"] : []),
                       ].map((s, i) => (
                         <span
                           key={i}
@@ -2509,14 +2898,58 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                 <div>
                   <div style={{ fontWeight: 600, fontSize: 14 }}>CG Verification Inbox</div>
                   <div style={{ fontSize: 11, color: GC.gray400, marginTop: 1 }}>
-                    {mockIncomingEmails.filter(e => e.status === "processing").length} processing · {mockIncomingEmails.filter(e => e.status === "verified" || e.status === "pending_review").length} ready
+                    {[...incomingEmails, ...mockIncomingEmails].filter(e => e.status === "processing").length} processing · {[...incomingEmails, ...mockIncomingEmails].filter(e => e.status === "verified" || e.status === "pending_review").length} ready
                   </div>
                 </div>
               </div>
 
+              {/* File Upload Trigger */}
+              <div style={{ padding: "12px", borderBottom: `1px solid ${GC.border}` }}>
+                <label
+                  style={{
+                    display: "flex",
+                    flexDirection: "column",
+                    alignItems: "center",
+                    padding: "16px",
+                    background: cgUploading ? GC.amberLight : GC.blueLight,
+                    border: `2px dashed ${cgUploading ? GC.amber : GC.blue}`,
+                    borderRadius: 10,
+                    cursor: cgUploading ? "wait" : "pointer",
+                    transition: "all 0.15s",
+                  }}
+                >
+                  <input
+                    type="file"
+                    accept=".pdf,image/*"
+                    style={{ display: "none" }}
+                    disabled={cgUploading}
+                    onChange={(e) => {
+                      const file = e.target.files?.[0];
+                      if (file) {
+                        setCgUploading(true);
+                        processIncomingDocument(file, "supplier@example.com").finally(() => setCgUploading(false));
+                      }
+                      e.target.value = "";
+                    }}
+                  />
+                  {cgUploading ? (
+                    <>
+                      <span style={{ fontSize: 20, marginBottom: 6, animation: "spin 1s linear infinite" }}>⟳</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: GC.amber }}>Processing document...</span>
+                    </>
+                  ) : (
+                    <>
+                      <span style={{ fontSize: 20, marginBottom: 6 }}>📤</span>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: GC.blue }}>Upload Document</span>
+                      <span style={{ fontSize: 10, color: GC.gray400, marginTop: 2 }}>Simulates incoming email from SU</span>
+                    </>
+                  )}
+                </label>
+              </div>
+
               {/* Email List */}
               <div style={{ flex: 1, overflowY: "auto", padding: "12px" }}>
-                {mockIncomingEmails.map((email) => (
+                {[...incomingEmails, ...mockIncomingEmails].map((email) => (
                   <div
                     key={email.id}
                     onClick={() => {
@@ -2899,7 +3332,12 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                       )}
                       <button
                         onClick={() => {
-                          alert("Document approved and stored!");
+                          if (selectedEmail) {
+                            const storedDoc = storeVerifiedDocument(selectedEmail);
+                            if (storedDoc) {
+                              alert(`Document approved and stored!\n\nDoc ID: ${storedDoc.doc_id}\nContainer: ${storedDoc.container_number || "N/A"}\nConsignee: ${storedDoc.consignee || "N/A"}\n\nYou can now query this document in the Analytics tab using:\n"SELECT * FROM verified_documents"`);
+                            }
+                          }
                         }}
                         style={{
                           padding: "10px 20px",
@@ -2915,7 +3353,7 @@ Return ONLY valid JSON (no markdown): {"sql":"...","answer":"...","chart_type":"
                           gap: 6,
                         }}
                       >
-                        ✓ Approve Document
+                        ✓ Approve & Store
                       </button>
                     </div>
                   </div>
